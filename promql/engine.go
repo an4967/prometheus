@@ -18,6 +18,7 @@ import (
 	"container/heap"
 	"context"
 	"fmt"
+	"hash/fnv"
 	"math"
 	"reflect"
 	"regexp"
@@ -26,6 +27,7 @@ import (
 	"strconv"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
@@ -569,6 +571,14 @@ func durationMilliseconds(d time.Duration) int64 {
 	return int64(d / (time.Millisecond / time.Nanosecond))
 }
 
+func hash(s string) uint32 {
+	h := fnv.New32a()
+	h.Write([]byte(s))
+	return h.Sum32()
+}
+
+var query_map = sync.Map{}
+
 // execEvalStmt evaluates the expression of an evaluation statement for the given time range.
 func (ng *Engine) execEvalStmt(ctx context.Context, query *query, s *parser.EvalStmt) (parser.Value, storage.Warnings, error) {
 	prepareSpanTimer, ctxPrepare := query.stats.GetSpanTimer(ctx, stats.QueryPreparationTime, ng.metrics.queryPrepareTime)
@@ -601,20 +611,70 @@ func (ng *Engine) execEvalStmt(ctx context.Context, query *query, s *parser.Eval
 			noStepSubqueryIntervalFn: ng.noStepSubqueryIntervalFn,
 		}
 
-		fmt.Print(">> [DAE] start : ")
-		fmt.Println(start)
+		/*
+		   https://promlabs.com/blog/2020/06/18/the-anatomy-of-a-promql-query
+
+		   curl localhost:9090/api/v1/query --data-urlencode "query=up"
+		   curl localhost:9090/api/v1/query --data-urlencode "query=http_requests_total"
+		   curl localhost:9090/api/v1/query --data-urlencode "query=demo_num_cpus[1h:1s]"
+		   curl localhost:9090/api/v1/query --data-urlencode "query=demo_api_request_duration_seconds_bucket[1h:50ms]"
+		   curl localhost:9090/api/v1/query --data-urlencode "query=changes(demo_api_request_duration_seconds_bucket[1h:50ms])"
+		   curl localhost:9090/api/v1/query --data-urlencode "query=changes(changes(demo_api_request_duration_seconds_bucket[1h:50ms])[1h:50ms])"
+
+		   curl localhost:9090/api/v1/query --data-urlencode "query=up&time=2015-07-01T20:10:51.781Z"
+		   curl 'http://localhost:9090/api/v1/query?query=up[1m]&time=1654839672.122'
+		   curl 'http://localhost:9090/api/v1/query?query=up[1m]'
+
+		*/
+
 		fmt.Print(">> [DAE] s.Start : ")
 		fmt.Println(s.Start)
+		fmt.Print(">> [DAE] start : ")
+		fmt.Println(start)
 
 		fmt.Print(">> [DAE] Origin : ")
 		fmt.Println(query.String())
 		fmt.Print(">> [DAE] Parser : ")
 		fmt.Println(s.Expr.String())
 
-		val, warnings, err := evaluator.Eval(s.Expr)
-		if err != nil {
-			return nil, warnings, err
+		key_string := s.Expr.String() + strconv.FormatInt(start, 10)
+		hash_value := hash(key_string)
+
+		fmt.Print(">> [DAE] KEYSTR : ")
+		fmt.Println(key_string)
+
+		fmt.Print(">> [DAE] HASHED : ")
+		fmt.Println(hash_value)
+
+		// val, warnings, err := evaluator.Eval(s.Expr)
+		// if err != nil {
+		// 	return nil, warnings, err
+		// }
+
+		var val parser.Value
+		var warnings storage.Warnings
+		var err error
+
+		if v, ok := query_map.Load(hash_value); ok {
+			fmt.Printf("** [DAE] Hit!! [%T] **\n", v)
+			switch real_val := v.(type) {
+			case parser.Value:
+				val = real_val
+			}
+		} else {
+			val, warnings, err = evaluator.Eval(s.Expr)
+			if err != nil {
+				return nil, warnings, err
+			}
+			query_map.Store(hash_value, val)
 		}
+
+		fmt.Printf("Type : %T // size  : %d\n", val, unsafe.Sizeof(val))
+
+		fmt.Println(">> [DAE] Result <<")
+
+		fmt.Println(val.String())
+		fmt.Println()
 
 		evalSpanTimer.Finish()
 
@@ -623,7 +683,9 @@ func (ng *Engine) execEvalStmt(ctx context.Context, query *query, s *parser.Eval
 		switch result := val.(type) {
 		case Matrix:
 			mat = result
+			fmt.Println("!! [DAE] MATRIX !!")
 		case String:
+			fmt.Println("!! [DAE] STRING !!")
 			return result, warnings, nil
 		default:
 			panic(errors.Errorf("promql.Engine.exec: invalid expression type %q", val.Type()))
@@ -937,9 +999,6 @@ func (ev *evaluator) Eval(expr parser.Expr) (v parser.Value, ws storage.Warnings
 	}
 
 	v, ws = ev.eval(expr)
-	fmt.Println(">> [DAE] Result")
-	fmt.Println(v.String())
-	fmt.Println()
 	return v, ws, nil
 }
 
@@ -1192,40 +1251,40 @@ func (ev *evaluator) eval(expr parser.Expr) (parser.Value, storage.Warnings) {
 	}
 	numSteps := int((ev.endTimestamp-ev.startTimestamp)/ev.interval) + 1
 
-	fmt.Println(">> [DAE] Checking!!")
-	fmt.Println(expr.String())
-	fmt.Println(expr.Type())
+	// fmt.Println(">> [DAE] Checking!!")
+	// fmt.Println(expr.String())
+	// fmt.Println(expr.Type())
 
-	_, file, no, ok := runtime.Caller(1)
-	if ok {
-		fmt.Printf("called from %s#%d\n", file, no)
-	}
+	// _, file, no, ok := runtime.Caller(1)
+	// if ok {
+	// 	fmt.Printf("called from %s#%d\n", file, no)
+	// }
 
-	switch expr.(type) {
-	case *parser.AggregateExpr:
-		fmt.Println("-> AggregateExpr")
-	case *parser.Call:
-		fmt.Println("-> Call")
-	case *parser.ParenExpr:
-		fmt.Println("-> ParenExpr")
-	case *parser.UnaryExpr:
-		fmt.Println("-> UnaryExpr")
-	case *parser.BinaryExpr:
-		fmt.Println("-> BinaryExpr")
-	case *parser.NumberLiteral:
-		fmt.Println("-> NumberLiteral")
-	case *parser.StringLiteral:
-		fmt.Println("-> StringLiteral")
-	case *parser.VectorSelector:
-		fmt.Println("-> VectorSelector")
-	case *parser.MatrixSelector:
-		fmt.Println("-> MatrixSelector")
-	case *parser.SubqueryExpr:
-		fmt.Println("-> SubqueryExpr")
-	case *parser.StepInvariantExpr:
-		fmt.Println("-> StepInvariantExpr")
-	}
-	fmt.Println()
+	// switch expr.(type) {
+	// case *parser.AggregateExpr:
+	// 	fmt.Println("-> AggregateExpr")
+	// case *parser.Call:
+	// 	fmt.Println("-> Call")
+	// case *parser.ParenExpr:
+	// 	fmt.Println("-> ParenExpr")
+	// case *parser.UnaryExpr:
+	// 	fmt.Println("-> UnaryExpr")
+	// case *parser.BinaryExpr:
+	// 	fmt.Println("-> BinaryExpr")
+	// case *parser.NumberLiteral:
+	// 	fmt.Println("-> NumberLiteral")
+	// case *parser.StringLiteral:
+	// 	fmt.Println("-> StringLiteral")
+	// case *parser.VectorSelector:
+	// 	fmt.Println("-> VectorSelector")
+	// case *parser.MatrixSelector:
+	// 	fmt.Println("-> MatrixSelector")
+	// case *parser.SubqueryExpr:
+	// 	fmt.Println("-> SubqueryExpr")
+	// case *parser.StepInvariantExpr:
+	// 	fmt.Println("-> StepInvariantExpr")
+	// }
+	// fmt.Println()
 
 	// Create a new span to help investigate inner evaluation performances.
 	span, _ := opentracing.StartSpanFromContext(ev.ctx, stats.InnerEvalTime.SpanOperation()+" eval "+reflect.TypeOf(expr).String())
