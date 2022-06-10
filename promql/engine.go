@@ -34,6 +34,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/model"
 	"github.com/uber/jaeger-client-go"
+	"golang.org/x/sys/unix"
 
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/model/timestamp"
@@ -600,6 +601,16 @@ func (ng *Engine) execEvalStmt(ctx context.Context, query *query, s *parser.Eval
 			noStepSubqueryIntervalFn: ng.noStepSubqueryIntervalFn,
 		}
 
+		fmt.Print(">> [DAE] start : ")
+		fmt.Println(start)
+		fmt.Print(">> [DAE] s.Start : ")
+		fmt.Println(s.Start)
+
+		fmt.Print(">> [DAE] Origin : ")
+		fmt.Println(query.String())
+		fmt.Print(">> [DAE] Parser : ")
+		fmt.Println(s.Expr.String())
+
 		val, warnings, err := evaluator.Eval(s.Expr)
 		if err != nil {
 			return nil, warnings, err
@@ -917,7 +928,18 @@ func (ev *evaluator) recover(ws *storage.Warnings, errp *error) {
 func (ev *evaluator) Eval(expr parser.Expr) (v parser.Value, ws storage.Warnings, err error) {
 	defer ev.recover(&ws, &err)
 
+	fmt.Printf(">> [DAE] Query[%d] : ", unix.Gettid())
+	fmt.Println(expr.String())
+
+	_, file, no, ok := runtime.Caller(1)
+	if ok {
+		fmt.Printf("called from %s#%d\n", file, no)
+	}
+
 	v, ws = ev.eval(expr)
+	fmt.Println(">> [DAE] Result")
+	fmt.Println(v.String())
+	fmt.Println()
 	return v, ws, nil
 }
 
@@ -1169,6 +1191,41 @@ func (ev *evaluator) eval(expr parser.Expr) (parser.Value, storage.Warnings) {
 		ev.error(err)
 	}
 	numSteps := int((ev.endTimestamp-ev.startTimestamp)/ev.interval) + 1
+
+	fmt.Println(">> [DAE] Checking!!")
+	fmt.Println(expr.String())
+	fmt.Println(expr.Type())
+
+	_, file, no, ok := runtime.Caller(1)
+	if ok {
+		fmt.Printf("called from %s#%d\n", file, no)
+	}
+
+	switch expr.(type) {
+	case *parser.AggregateExpr:
+		fmt.Println("-> AggregateExpr")
+	case *parser.Call:
+		fmt.Println("-> Call")
+	case *parser.ParenExpr:
+		fmt.Println("-> ParenExpr")
+	case *parser.UnaryExpr:
+		fmt.Println("-> UnaryExpr")
+	case *parser.BinaryExpr:
+		fmt.Println("-> BinaryExpr")
+	case *parser.NumberLiteral:
+		fmt.Println("-> NumberLiteral")
+	case *parser.StringLiteral:
+		fmt.Println("-> StringLiteral")
+	case *parser.VectorSelector:
+		fmt.Println("-> VectorSelector")
+	case *parser.MatrixSelector:
+		fmt.Println("-> MatrixSelector")
+	case *parser.SubqueryExpr:
+		fmt.Println("-> SubqueryExpr")
+	case *parser.StepInvariantExpr:
+		fmt.Println("-> StepInvariantExpr")
+	}
+	fmt.Println()
 
 	// Create a new span to help investigate inner evaluation performances.
 	span, _ := opentracing.StartSpanFromContext(ev.ctx, stats.InnerEvalTime.SpanOperation()+" eval "+reflect.TypeOf(expr).String())
