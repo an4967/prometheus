@@ -656,17 +656,42 @@ func (ng *Engine) execEvalStmt(ctx context.Context, query *query, s *parser.Eval
 		var err error
 
 		if v, ok := query_map.Load(hash_value); ok {
-			fmt.Printf("** [DAE] Hit!! [%T] **\n", v)
-			switch real_val := v.(type) {
+			switch result := v.(type) {
 			case parser.Value:
-				val = real_val
+				val = result
 			}
+			fmt.Printf("** [DAE] Hit!! [%T] **\n", v)
 		} else {
 			val, warnings, err = evaluator.Eval(s.Expr)
 			if err != nil {
 				return nil, warnings, err
 			}
-			query_map.Store(hash_value, val)
+
+			switch result := val.(type) {
+			case Matrix:
+				var mat_data Matrix
+				mat_data = make([]Series, len(result))
+
+				for i, s := range result {
+					mat_data[i].Metric = s.Metric.Copy()
+					mat_data[i].Points = make([]Point, len(s.Points))
+					for j, p := range s.Points {
+						mat_data[i].Points[j].T = p.T
+						mat_data[i].Points[j].V = p.V
+					}
+				}
+
+				query_map.Store(hash_value, mat_data)
+				fmt.Printf("** [DAE] Saved1!! [%T, %d] **\n", mat_data, unsafe.Sizeof(mat_data))
+
+			case String:
+				var mat_data String
+				mat_data.T = result.T
+				mat_data.V = result.V
+
+				query_map.Store(hash_value, mat_data)
+				fmt.Printf("** [DAE] Saved2!! [%T] **\n", mat_data)
+			}
 		}
 
 		fmt.Printf("Type : %T // size  : %d\n", val, unsafe.Sizeof(val))
@@ -683,7 +708,13 @@ func (ng *Engine) execEvalStmt(ctx context.Context, query *query, s *parser.Eval
 		switch result := val.(type) {
 		case Matrix:
 			mat = result
-			fmt.Println("!! [DAE] MATRIX !!")
+			fmt.Printf("!! [DAE] MATRIX [%d] !!\n", len(result))
+
+			for i, s := range mat {
+				fmt.Printf("[DAE][%d] Type : %T, Metric : %T, Point : %T\n", i, s, s.Metric, s.Points)
+				fmt.Printf("  >> Metric : %d\n", len(s.Metric))
+				fmt.Printf("  >> Points : %d\n", len(s.Points))
+			}
 		case String:
 			fmt.Println("!! [DAE] STRING !!")
 			return result, warnings, nil
