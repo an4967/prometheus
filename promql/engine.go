@@ -18,6 +18,7 @@ import (
 	"container/heap"
 	"context"
 	"fmt"
+	"hash/fnv"
 	"math"
 	"reflect"
 	"regexp"
@@ -568,6 +569,12 @@ func durationMilliseconds(d time.Duration) int64 {
 	return int64(d / (time.Millisecond / time.Nanosecond))
 }
 
+func hash(s string) uint64 {
+	h := fnv.New64a()
+	h.Write([]byte(s))
+	return h.Sum64()
+}
+
 // execEvalStmt evaluates the expression of an evaluation statement for the given time range.
 func (ng *Engine) execEvalStmt(ctx context.Context, query *query, s *parser.EvalStmt) (parser.Value, storage.Warnings, error) {
 	prepareSpanTimer, ctxPrepare := query.stats.GetSpanTimer(ctx, stats.QueryPreparationTime, ng.metrics.queryPrepareTime)
@@ -600,9 +607,43 @@ func (ng *Engine) execEvalStmt(ctx context.Context, query *query, s *parser.Eval
 			noStepSubqueryIntervalFn: ng.noStepSubqueryIntervalFn,
 		}
 
-		val, warnings, err := evaluator.Eval(s.Expr)
-		if err != nil {
-			return nil, warnings, err
+		key_string := s.Expr.String() + strconv.FormatInt(start, 10)
+		hash_value := hash(key_string)
+
+		var val parser.Value
+		var warnings storage.Warnings
+		var err error
+
+		if v, ok := NewCacheMap().Get(hash_value); ok {
+			val = v
+		} else {
+			val, warnings, err = evaluator.Eval(s.Expr)
+			if err != nil {
+				return nil, warnings, err
+			}
+
+			switch result := val.(type) {
+			case Matrix:
+				var mat_data Matrix
+				mat_data = make([]Series, len(result))
+
+				for i, s := range result {
+					mat_data[i].Metric = s.Metric.Copy()
+					mat_data[i].Points = make([]Point, len(s.Points))
+					for j, p := range s.Points {
+						mat_data[i].Points[j].T = p.T
+						mat_data[i].Points[j].V = p.V
+					}
+				}
+				NewCacheMap().Set(hash_value, mat_data)
+
+			case String:
+				var mat_data String
+				mat_data.T = result.T
+				mat_data.V = result.V
+
+				NewCacheMap().Set(hash_value, mat_data)
+			}
 		}
 
 		evalSpanTimer.Finish()
