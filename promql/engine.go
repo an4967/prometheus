@@ -25,6 +25,7 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -631,13 +632,16 @@ func (ng *Engine) execEvalStmt(ctx context.Context, query *query, s *parser.Eval
 		fmt.Println(s.Start)
 		fmt.Print(">> [DAE] start : ")
 		fmt.Println(start)
+		fmt.Print(">> [DAE] maxt : ")
+		fmt.Println(maxt)
 
 		fmt.Print(">> [DAE] Origin : ")
-		fmt.Println(query.String())
+		key_string := strings.Trim(query.String(), " ")
+		fmt.Println(key_string)
 		fmt.Print(">> [DAE] Parser : ")
 		fmt.Println(s.Expr.String())
 
-		key_string := s.Expr.String() + strconv.FormatInt(start, 10)
+		key_string += "/" + strconv.FormatInt(maxt, 10)
 		hash_value := hash(key_string)
 
 		fmt.Print(">> [DAE] KEYSTR : ")
