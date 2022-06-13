@@ -568,6 +568,28 @@ func durationMilliseconds(d time.Duration) int64 {
 	return int64(d / (time.Millisecond / time.Nanosecond))
 }
 
+func copyParserValue(v *parser.Value) *parser.Value {
+	var data parser.Value
+	switch result := (*v).(type) {
+	case Matrix:
+		var mat_data Matrix
+		mat_data = make([]Series, len(result))
+
+		for i, s := range result {
+			mat_data[i].Metric = s.Metric.Copy()
+			mat_data[i].Points = make([]Point, len(s.Points))
+			copy(mat_data[i].Points, s.Points)
+		}
+		data = mat_data
+	case String:
+		var mat_data String
+		mat_data.T = result.T
+		mat_data.V = result.V
+		data = mat_data
+	}
+	return &data
+}
+
 // execEvalStmt evaluates the expression of an evaluation statement for the given time range.
 func (ng *Engine) execEvalStmt(ctx context.Context, query *query, s *parser.EvalStmt) (parser.Value, storage.Warnings, error) {
 	prepareSpanTimer, ctxPrepare := query.stats.GetSpanTimer(ctx, stats.QueryPreparationTime, ng.metrics.queryPrepareTime)
@@ -600,9 +622,20 @@ func (ng *Engine) execEvalStmt(ctx context.Context, query *query, s *parser.Eval
 			noStepSubqueryIntervalFn: ng.noStepSubqueryIntervalFn,
 		}
 
-		val, warnings, err := evaluator.Eval(s.Expr)
-		if err != nil {
-			return nil, warnings, err
+		var val parser.Value
+		var warnings storage.Warnings
+		var err error
+
+		if v, ok := NewCacheMap().Get(query.String(), maxt); ok {
+			val = *copyParserValue(v)
+		} else {
+			val, warnings, err = evaluator.Eval(s.Expr)
+			if err != nil {
+				return nil, warnings, err
+			}
+
+			data := copyParserValue(&val)
+			NewCacheMap().Set(query.String(), maxt, data)
 		}
 
 		evalSpanTimer.Finish()
